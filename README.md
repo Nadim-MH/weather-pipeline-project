@@ -16,51 +16,85 @@ This project implements an end-to-end, production-grade **ELT Data Engineering P
 
 ---
 
-## 🏗️ Architecture & Data Flow
+## 🏗️ System Architecture & Data Lineage
 
-> ![Pipeline Architecture](docs/images/architecture.png) *(Replace with exported image from `de_weather_project.drawio.pdf`)*[cite: 12]
+### 1. High-Level System Architecture
+> ![System Architecture](docs/images/architecture.png) *(Replace with exported image from `de_weather_project.drawio.pdf`)*[cite: 12]
 
 ```text
-[Open-Meteo API] 
-       │
-       ▼ (Python Extraction: One-Time Historical Backfill & Daily Batch)
-[Apache Airflow] ──► [BigQuery: Bronze Layer] (`raw_weather_responses` - Append-Only JSON)
-                              │
-                              ▼ (dbt Incremental Merge, UNNEST, Deduplication & Quarantine)
-                     [BigQuery: Silver Layer] (`stg_weather_hourly`, `int_weather_hourly_clean`, `quarantine_weather_hourly`)
-                              │
-                              ▼ (dbt Star Schema, Aggregations & Observability Marts)
-                     [BigQuery: Gold Layer]   (`fct_daily_weather`, `fct_weather_hourly`, `mart_pipeline_health`, `vw_dashboard_daily`)
-                              │
-                              ▼
-                     [Looker Studio BI Dashboard]
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                             ORCHESTRATION: Apache Airflow                               │
+│                     (Daily Batch Scheduling, Monitoring & Retries)                      │
+└───────────────┬─────────────────────────────────────────┬───────────────────────────────┘
+                │ 1. Trigger Python Extraction            │ 2. Trigger dbt Build & Tests
+                ▼                                         ▼
+┌───────────────────────────────┐         ┌───────────────────────────────────────────────┐
+│        EXTERNAL SOURCE        │         │        GOOGLE BIGQUERY (DATA WAREHOUSE)       │
+│                               │         │                                               │
+│        Open-Meteo API         │ ──────► │  [Bronze Layer]  raw_weather_responses (JSON) │
+│   (14 Saudi Cities Weather)   │  Load   │                        │                      │
+└───────────────────────────────┘         │                        ▼                      │
+                                          │  [Silver Layer]  Staging, Dedup & Quarantine  │
+                                          │                        │                      │
+                                          │                        ▼                      │
+                                          │  [Gold Layer]    Star Schema & Health Marts   │
+                                          └────────────────────────┬──────────────────────┘
+                                                                   │ 3. Serve Clean Data
+                                                                   ▼
+┌──────────────────────────────────────────────────────────────────┴──────────────────────┐
+│                   INFRASTRUCTURE: Terraform IaC                  │     BI & REPORTING   │
+│            (Automated Provisioning of BigQuery Datasets)         │    Looker Studio     │
+└──────────────────────────────────────────────────────────────────┴──────────────────────┘
 ```
 
-### Tech Stack
-* **Infrastructure as Code (IaC):** Terraform (Automated provisioning of Google BigQuery datasets and cloud resources)[cite: 10, 12].
-* **Orchestration & Extraction:** Apache Airflow & Python (Scheduled daily API extraction and historical backfill from the **Open-Meteo API**)[cite: 9, 12].
-* **Cloud Data Warehouse:** Google BigQuery[cite: 12].
-* **Transformation & Data Quality:** dbt Core (Incremental `merge` models, array unnesting, `dbt_utils` schema tests, and quarantine routing)[cite: 4, 5, 12].
-* **Business Intelligence:** Looker Studio[cite: 12].
+### 2. Detailed dbt Data Lineage (Medallion Flow)
+The transformation layer follows a strict modular DAG inside BigQuery, separating main analytical processing from quarantine auditing and pipeline health observability:
+
+> ![dbt Lineage Graph](docs/images/dbt_lineage.png) *(Replace with your dbt Lineage screenshot)*[cite: 13]
+
+```text
+                                                                              ┌──► [dim_city] ─────────┐
+                                                                              ├──► [dim_date] ─────────┤
+[bronze.raw_weather_responses] ──┬──► [stg_weather_hourly] ──┬───────────────► [int_weather_hourly_clean] ──► [fct_weather_hourly] ──► [fct_daily_weather] ──┼──► [vw_dashboard_daily]
+                                 │                           │                ├──► [dim_weather_code] ─┘
+                                 │                           ▼                │
+                                 │              [quarantine_weather_hourly] ──┘
+                                 │                           │
+                                 └───────────────────────────┴───────────────► [mart_pipeline_health]
+```
+
+### Step-by-Step Data Flow:
+1. **Ingestion (Airflow ➔ Bronze):** An Airflow DAG queries the Open-Meteo API for 14 Saudi cities and loads the raw JSON payloads into `bronze.raw_weather_responses` (append-only)[cite: 4, 7, 12, 13].
+2. **Staging & Deduplication (Bronze ➔ Silver):** `stg_weather_hourly` incrementally extracts only new payloads, deduplicates intra-batch retries via `QUALIFY ROW_NUMBER()`, and flattens the nested hourly arrays (`UNNEST WITH OFFSET`)[cite: 4].
+3. **Quarantine & Filtering (Silver ➔ Silver):** 
+   * `quarantine_weather_hourly` scans staged records and captures any rows violating domain quality rules[cite: 12, 13].
+   * `int_weather_hourly_clean` takes the staged data, excludes quarantined records, and outputs strictly validated hourly observations[cite: 12, 13].
+4. **Observability Branch (Bronze + Silver ➔ Gold):** `mart_pipeline_health` joins `bronze.raw_weather_responses` with `quarantine_weather_hourly` to calculate daily `records_ingested` vs. `records_quarantined` per `run_date`[cite: 9, 13].
+5. **Star Schema & BI Serving (Silver ➔ Gold):** Validated hourly data flows into `fct_weather_hourly` and aggregates into `fct_daily_weather`[cite: 12, 13]. Finally, `vw_dashboard_daily` joins `fct_daily_weather` with three dimensional tables (`dim_city`, `dim_date`, `dim_weather_code`) to power the Looker Studio dashboard[cite: 12, 13].
 
 ---
 
-## 🥉🥈🥇 Medallion Data Modeling
+## 🥉🥈🥇 Data Dictionary & Modeling Details
 
 ### 1. Bronze Layer (Raw Landing)
-* **`raw_weather_responses`**: Append-only table storing raw JSON payloads directly from the Open-Meteo API alongside ingestion metadata (`city_id`, `request_date`, `pulled_at`)[cite: 4, 12]. No transformations are applied at this stage to ensure full replayability[cite: 12].
+* **`raw_weather_responses`**: Append-only landing table storing raw JSON responses alongside ingestion metadata (`city_id`, `request_date`, `pulled_at`, `payload`)[cite: 4, 12].
 
 ### 2. Silver Layer (Cleansed, Standardized & Quarantined)
-* **`stg_weather_hourly`**: 
-  * Configured as an `incremental` model with `incremental_strategy='merge'` on a composite `unique_key=['city_id', 'observed_at_utc']`[cite: 4].
-  * Optimizes JSON parsing by extracting hourly arrays (`time`, `temperature_2m`, `relative_humidity_2m`, `precipitation`, `wind_speed_10m`, `weather_code`) once and flattening them via `UNNEST WITH OFFSET`[cite: 4].
-  * Enforces **intra-batch deduplication** using `QUALIFY ROW_NUMBER()`[cite: 4].
-* **`int_weather_hourly_clean` & `quarantine_weather_hourly`**: Evaluates domain-specific data quality rules[cite: 5, 12]. Valid observations flow downstream, while corrupted or out-of-bounds records are isolated in the quarantine table for auditing rather than failing silently[cite: 12].
+* **`stg_weather_hourly`**: Incremental table (`incremental_strategy='merge'`, `unique_key=['city_id', 'observed_at_utc']`) that parses JSON arrays (`time`, `temperature_2m`, `relative_humidity_2m`, `precipitation`, `wind_speed_10m`, `weather_code`) into typed columns[cite: 4, 12].
+* **`quarantine_weather_hourly`**: Isolates anomalous or corrupted weather observations for auditing without halting pipeline execution[cite: 12, 13].
+* **`int_weather_hourly_clean`**: Clean intermediate model feeding downstream fact tables[cite: 13].
 
 ### 3. Gold Layer (Business-Ready Star Schema & Observability)
-* **`fct_weather_hourly` & `fct_daily_weather`**: Core fact tables joined with dimensional models (`dim_city`, `dim_date`) providing daily and hourly aggregations (average/min/max temperatures, daily temperature range, total rainfall, and relative humidity)[cite: 5, 7, 8, 12].
-* **`mart_pipeline_health`**: Data observability mart tracking daily `records_ingested` vs. `records_quarantined` per `run_date`[cite: 1, 9].
-* **`vw_dashboard_daily`**: Denormalized analytical view powering the BI layer[cite: 5].
+* **Fact Tables:**
+  * **`fct_weather_hourly`**: Granular hourly weather facts across all 14 cities[cite: 7, 12, 13].
+  * **`fct_daily_weather`**: Daily city-level aggregations (avg/min/max temperatures, daily temperature range, total precipitation, avg relative humidity, and dominant weather code)[cite: 7, 8, 12, 13].
+* **Dimension Tables:**
+  * **`dim_city`**: City metadata, geographic coordinates (latitude/longitude), and macro-regional classifications (`Central`, `Eastern`, `Western`, `Northern`, `Southern`)[cite: 7, 9, 12, 13].
+  * **`dim_date`**: Calendar attributes, seasons (`Winter`, `Spring`, `Summer`, `Autumn`), and `season_year` mappings[cite: 1, 8, 12, 13].
+  * **`dim_weather_code`**: WMO weather code descriptions and weather condition groupings[cite: 4, 13].
+* **Marts & BI Views:**
+  * **`mart_pipeline_health`**: Tracks daily ingestion volume and quarantine counts[cite: 9, 13].
+  * **`vw_dashboard_daily`**: Denormalized wide view joining `fct_daily_weather` with `dim_city`, `dim_date`, and `dim_weather_code` for high-performance BI querying[cite: 13].
 
 > **🌍 Geospatial Note (Dammam & Khobar):** Among the 14 monitored cities, **Dammam** and **Khobar** are geographically adjacent in the Eastern Province with closely proximate coordinates[cite: 7, 8]. While their macro-level weather trends closely align, both cities are tracked independently across the pipeline and dimensional model to preserve city-level granularity and demographic completeness on the dashboard[cite: 7, 8].
 
@@ -151,6 +185,9 @@ Breaks down regional rainfall share (Southern region leading at 45.5%), tracks W
     │   │   ├── schema.yml
     │   │   └── sources.yml
     │   └── gold/
+    │       ├── dim_city.sql
+    │       ├── dim_date.sql
+    │       ├── dim_weather_code.sql
     │       ├── fct_weather_hourly.sql
     │       ├── fct_daily_weather.sql
     │       ├── mart_pipeline_health.sql
