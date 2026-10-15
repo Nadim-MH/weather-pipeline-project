@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: bronze
+    database: de-weather-project-510114
+    schema: weather_bronze
+    tables:
+      - name: raw_weather_responses
+        description: "البيانات الخام القادمة من واجهة الطقس بصيغة JSON"

@@ -1,0 +1,17 @@
+name: 'weather_transform'
+version: '1.0.0'
+config-version: 2
+
+profile: 'weather_transform'
+
+models:
+  weather_transform:
+    silver:
+      +materialized: incremental
+      +schema: weather_silver
+    gold:
+      +schema: weather_gold
+
+seeds:
+  weather_transform:
+    +schema: weather_gold

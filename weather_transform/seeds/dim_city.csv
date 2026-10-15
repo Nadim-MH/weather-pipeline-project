@@ -1,0 +1,15 @@
+city_id,city_name,region,latitude,longitude
+1,Riyadh,Central,24.7136,46.6753
+2,Buraidah,Central,26.3260,43.9390
+3,Dammam,Eastern,26.4207,50.0888
+4,Khobar,Eastern,26.2833,50.2000
+5,Hofuf,Eastern,25.3646,49.5879
+6,Abha,Southern,18.2164,42.5053
+7,Baha,Southern,20.0129,41.4677
+8,Jizan,Southern,16.8892,42.5511
+9,Makkah,Western,21.3891,39.8579
+10,Jeddah,Western,21.4858,39.1925
+11,Madinah,Western,24.5247,39.5692
+12,Tabuk,Northern,28.3835,36.5662
+13,Hail,Northern,27.5114,41.6907
+14,Sakaka,Northern,29.9697,40.2000

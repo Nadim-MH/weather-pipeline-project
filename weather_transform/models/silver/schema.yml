@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: stg_weather_hourly
+    description: "Silver layer model: Cleans, unnested, and typed hourly weather data."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - city_id
+              - observed_at_utc
+    columns:
+      - name: city_id
+        description: "The unique identifier for the city."
+        tests:
+          - not_null
+
+      - name: observed_at_utc
+        description: "The exact hour of the weather observation in UTC."
+        tests:
+          - not_null
+
+      - name: temperature_2m_c
+        description: "Temperature at 2 meters above ground in Celsius."
+        tests:
+          - not_null
+
+      - name: relative_humidity_2m_percent
+        description: "Relative humidity at 2 meters."
+        tests:
+          - not_null
+
+      - name: precipitation_mm
+        description: "Total precipitation in millimeters."
+        tests:
+          - not_null
+
+      - name: wind_speed_10m_kmh
+        description: "Wind speed at 10 meters above ground in km/h."
+        tests:
+          - not_null
+
+      - name: weather_code
+        description: "WMO Weather interpretation code (0-99)."
+        tests:
+          - not_null
