@@ -21,47 +21,10 @@ This project implements an end-to-end, production-grade **ELT Data Engineering P
 ### 1. High-Level System Architecture
 > ![System Architecture](docs/image/architecture.png)
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                             ORCHESTRATION: Apache Airflow                               │
-│                     (Daily Batch Scheduling, Monitoring & Retries)                      │
-└───────────────┬─────────────────────────────────────────┬───────────────────────────────┘
-                │ 1. Trigger Python Extraction            │ 2. Trigger dbt Build & Tests
-                ▼                                         ▼
-┌───────────────────────────────┐         ┌───────────────────────────────────────────────┐
-│        EXTERNAL SOURCE        │         │        GOOGLE BIGQUERY (DATA WAREHOUSE)       │
-│                               │         │                                               │
-│        Open-Meteo API         │ ──────► │  [Bronze Layer]  raw_weather_responses (JSON) │
-│   (14 Saudi Cities Weather)   │  Load   │                        │                      │
-└───────────────────────────────┘         │                        ▼                      │
-                                          │  [Silver Layer]  Staging, Dedup & Quarantine  │
-                                          │                        │                      │
-                                          │                        ▼                      │
-                                          │  [Gold Layer]    Star Schema & Health Marts   │
-                                          └────────────────────────┬──────────────────────┘
-                                                                   │ 3. Serve Clean Data
-                                                                   ▼
-┌──────────────────────────────────────────────────────────────────┴──────────────────────┐
-│                   INFRASTRUCTURE: Terraform IaC                  │     BI & REPORTING   │
-│            (Automated Provisioning of BigQuery Datasets)         │    Looker Studio     │
-└──────────────────────────────────────────────────────────────────┴──────────────────────┘
-```
-
 ### 2. Detailed dbt Data Lineage (Medallion Flow)
 The transformation layer follows a strict modular DAG inside BigQuery, separating main analytical processing from quarantine auditing and pipeline health observability[cite: 12]:
 
 > ![dbt Lineage Graph](docs/image/dbt_lineage.png)
-
-```text
-                                                                              ┌──► [dim_city] ─────────┐
-                                                                              ├──► [dim_date] ─────────┤
-[bronze.raw_weather_responses] ──┬──► [stg_weather_hourly] ──┬───────────────► [int_weather_hourly_clean] ──► [fct_weather_hourly] ──► [fct_daily_weather] ──┼──► [vw_dashboard_daily]
-                                 │                           │                ├──► [dim_weather_code] ─┘
-                                 │                           ▼                │
-                                 │              [quarantine_weather_hourly] ──┘
-                                 │                           │
-                                 └───────────────────────────┴───────────────► [mart_pipeline_health]
-```
 
 ### Step-by-Step Data Flow:
 1. **Ingestion (Airflow ➔ Bronze):** An Airflow DAG queries the Open-Meteo API for 14 Saudi cities and loads the raw JSON payloads into `bronze.raw_weather_responses` (append-only)[cite: 3, 6, 11, 12].
