@@ -1,7 +1,7 @@
 # 🌤️ Saudi Arabia Weather Analytics & Data Engineering Pipeline
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg?logo=python&logoColor=white)
-![Apache Airflow](https://img.shields.io/badge/Apache%20Airflow-2.x-017CEE.svg?logo=Apache%20Airflow&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.12-blue.svg?logo=python&logoColor=white)
+![Apache Airflow](https://img.shields.io/badge/Apache%20Airflow-3.3.0-017CEE.svg?logo=Apache%20Airflow&logoColor=white)
 ![Google BigQuery](https://img.shields.io/badge/Google%20BigQuery-4285F4.svg?logo=google-cloud&logoColor=white)
 ![dbt](https://img.shields.io/badge/dbt-Core-FF694B.svg?logo=dbt&logoColor=white)
 ![Terraform](https://img.shields.io/badge/Terraform-IaC-7B42BC.svg?logo=terraform&logoColor=white)
@@ -17,6 +17,8 @@ This project implements an end-to-end, production-grade **ELT Data Engineering P
 ---
 
 ## 🏗️ System Architecture & Data Lineage
+
+*Architecture diagrams are included in `docs/image/` — see the repository for the latest version.*
 
 ### 1. High-Level System Architecture
 > ![System Architecture](docs/image/architecture.png)
@@ -68,7 +70,7 @@ The transformation layer follows a strict modular DAG inside BigQuery, separatin
 A core design goal of this project is **Pipeline Observability** and **Idempotency**—ensuring that task failures and retries never corrupt downstream analytics. During production testing, a real-world data engineering incident occurred, was surfaced by our observability tools, and was permanently resolved:
 
 ### 1. The Incident (What Happened?)
-The Airflow ingestion DAG is designed to pull 14 records daily (one JSON payload per Saudi city) into the append-only Bronze table (`raw_weather_responses`). On **October 8, 2026**, a transient network issue triggered an **Airflow task retry**. Because the Bronze layer is append-only, one city's payload was ingested twice within the same batch—resulting in **15 ingested records** instead of 14.
+The Airflow ingestion DAG is designed to pull 14 records daily (one JSON payload per Saudi city) into the append-only Bronze table (`raw_weather_responses`). On **October 8, 2026**, a manual DAG trigger overlapped with the regularly scheduled run. Because the Bronze table is append-only and both runs executed near-simultaneously, each inserted its own copy of the same city's payload (`city_id=6`) before either run could see the other's insert — resulting in **15 ingested records** instead of the expected 14 for that `request_date`.
 
 ### 2. How the Pipeline Detected It
 The anomaly was caught immediately across two independent defense layers:
@@ -100,7 +102,20 @@ WITH source_data AS (
     ) = 1
 )
 ```
-Following this fix, executing `dbt build --select stg_weather_hourly --full-refresh` purged the legacy duplicate rows, passed all 30 model and data tests, and restored the pipeline health table to a clean `14` records per day.
+
+**Preventing recurrence at the source:** Beyond the staging-layer safeguard above, the root fix was architectural — setting `max_active_runs=1` on the Airflow DAG itself, which makes concurrent runs of the same DAG impossible. The `QUALIFY` deduplication in `stg_weather_hourly` remains in place as a second line of defense, but the DAG-level setting is what actually prevents this class of incident from happening again.
+
+---
+
+## 🛑 Additional Failures & Fixes
+
+| # | Issue | Root Cause | Resolution |
+|---|---|---|---|
+| 1 | `PARSE_JSON` failed with "cannot round-trip through string representation" | Long decimal values (e.g., wind speed) within the raw JSON payloads. | Added `wide_number_mode => 'round'` to `PARSE_JSON` (deliberately avoided `SAFE.PARSE_JSON` to adhere to strict "fail loudly" principles). |
+| 2 | HTTP 429 (Rate Limit) from Open-Meteo during backfill | Fetching 5 years × 14 cities daily hit API weighted request limits. | Redesigned extraction logic: one bulk request per city per year, executed sequentially, while respecting `Retry-After` headers. |
+| 3 | dbt created schema `weather_silver_gold` instead of `weather_gold` | dbt's default behavior concatenates the profile's target schema with the model's custom schema. | Created a custom `generate_schema_name.sql` macro to bypass concatenation and use the intended custom name directly. |
+| 4 | `dbt build` hung for 15+ minutes on `fct_weather_hourly` | The incremental filter compared `pulled_at` with the table's `MAX` value on an unpartitioned column, causing full scans. | Switched to `insert_overwrite` strategy with `partition_by` on `date_day`, using a static 14-day lookback window instead of a self-table comparison. |
+| 5 | Duplicate Bronze rows (15 instead of 14 per day) | A manual DAG trigger overlapped concurrently with a scheduled run. | Enforced `max_active_runs=1` on the DAG, while retaining the Silver-layer `QUALIFY` deduplication as a secondary defense. |
 
 ---
 
@@ -109,7 +124,7 @@ Following this fix, executing `dbt build --select stg_weather_hourly --full-refr
 🔗 **[Live Interactive Dashboard](https://datastudio.google.com/reporting/d8a1eccb-1025-4494-9730-15dbc2ff7eb2)**
 
 ### Page 1: Overview
-Displays macro-level KPIs (`Avg Temperature: 25.86°C`, `Total Rainfall: 11,317 mm`, `Cities Covered: 14`, `Last Pipeline Run`), a geospatial bubble map of Saudi Arabia encoding both rainfall volume (bubble size) and temperature (color gradient), and a multi-year time series of monthly average temperatures across all 5 regions.
+Displays macro-level KPIs (including average temperature and total rainfall across all 14 cities, alongside the last pipeline run date), a geospatial bubble map of Saudi Arabia encoding both rainfall volume (bubble size) and temperature (color gradient), and a multi-year time series of monthly average temperatures across all 5 regions.
 > ![Overview Page](docs/image/dashboard_page1_overview.jpg)
 
 ### Page 2: City Comparison
@@ -117,7 +132,7 @@ Interactive cross-filtering by date range, season, region, and city name, featur
 > ![City Comparison Page](docs/image/dashboard_page2_cities.jpg)
 
 ### Page 3: Seasonal Analysis & Pipeline Health
-Breaks down regional rainfall share (Southern region leading at 45.5%), tracks Winter Rainfall across the last 5 winters (`2022–2026`), and features the **Pipeline Health: Daily Ingestion & Quarantine** audit table.
+Breaks down regional rainfall share, tracks Winter Rainfall across the last 5 winters, and features the **Pipeline Health: Daily Ingestion & Quarantine** audit table.
 > ![Seasonal & Pipeline Health Page](docs/image/dashboard_page3_health.jpg)
 
 ---
@@ -138,7 +153,9 @@ Breaks down regional rainfall share (Southern region leading at 45.5%), tracks W
 ├── airflow/                        # Airflow configurations & DAG definitions
 │   ├── airflow.cfg
 │   └── dags/
-│       └── weather_pipeline.py
+│       ├── weather_pipeline.py
+│       ├── backfill_bronze.py
+│       └── saudi_cities.py
 ├── keys/                           # GCP Service Account JSON keys (gitignored)
 ├── terraform/                      # Terraform IaC for GCP BigQuery provisioning
 │   ├── main.tf
@@ -147,6 +164,8 @@ Breaks down regional rainfall share (Southern region leading at 45.5%), tracks W
 └── weather_transform/              # dbt Core project
     ├── dbt_project.yml
     ├── packages.yml
+    ├── macros/
+    │   └── generate_schema_name.sql
     ├── models/
     │   ├── silver/
     │   │   ├── stg_weather_hourly.sql
@@ -155,14 +174,15 @@ Breaks down regional rainfall share (Southern region leading at 45.5%), tracks W
     │   │   ├── schema.yml
     │   │   └── sources.yml
     │   └── gold/
-    │       ├── dim_city.sql
     │       ├── dim_date.sql
-    │       ├── dim_weather_code.sql
     │       ├── fct_weather_hourly.sql
     │       ├── fct_daily_weather.sql
     │       ├── mart_pipeline_health.sql
-    │       └── vw_dashboard_daily.sql
-    ├── seeds/                      # City coordinates & regional lookup seeds
+    │       ├── vw_dashboard_daily.sql
+    │       └── schema.yml
+    ├── seeds/                      # City coordinates & regional lookup CSVs
+    │   ├── dim_city.csv
+    │   └── dim_weather_code.csv
     └── tests/                      # Custom data tests
 ```
 
@@ -170,22 +190,41 @@ Breaks down regional rainfall share (Southern region leading at 45.5%), tracks W
 
 ## 🚀 How to Run Locally
 
-### 1. Prerequisites & GCP Credentials
-1. Create a Google Cloud Project and a **Service Account** with `BigQuery Admin` (or `BigQuery Data Editor` & `BigQuery Job User`) roles.
-2. Download the Service Account JSON key and place it inside the `keys/` directory (e.g., `keys/pipeline-sa.json`).
+### 1. Prerequisites
+1. Create a Google Cloud Project and enable billing.
+2. Install Terraform, the `gcloud` CLI, and authenticate:
+   ```bash
+   gcloud auth application-default login
+   ```
 
----
+The pipeline's service account (`weather-pipeline-airflow-dbt`) and its IAM roles are provisioned automatically by Terraform in the next step — you do not need to create one manually.
 
-### 2. Provision Infrastructure (Terraform)
+### 2. Python Environment
+This project uses [uv](https://docs.astral.sh/uv/) and is pinned to Python 3.12 (see `.python-version`).
+```bash
+uv venv --python 3.12
+uv sync
+```
+
+### 3. Provision Infrastructure (Terraform)
 ```bash
 cd terraform
 terraform init
 terraform apply
+cd ..
 ```
 
----
+### 4. Generate Service Account Key
+Create and download the JSON key for the Terraform-provisioned service account:
+```bash
+gcloud iam service-accounts keys create keys/pipeline-sa.json \
+  --iam-account=weather-pipeline-airflow-dbt@YOUR_GCP_PROJECT_ID.iam.gserviceaccount.com
+```
 
-### 3. Configure & Run dbt Transformations
+### 5. Create the Bronze Table
+Terraform provisions the `weather_bronze` dataset but not the table itself (it's created once via SQL, since it's the pipeline's landing schema). Run the table-creation DDL from `terraform/bronze_table.sql` (or the BigQuery console) before the first Airflow run.
+
+### 6. Configure & Run dbt Transformations
 1. Create a `profiles.yml` file inside `weather_transform/` (or `~/.dbt/profiles.yml`) to connect dbt with BigQuery using your Service Account key:
 
 ```yaml
@@ -196,14 +235,15 @@ weather_transform:
       type: bigquery
       method: service-account
       project: YOUR_GCP_PROJECT_ID
-      dataset: weather_silver
+      dataset: weather_bronze
       threads: 4
       keyfile: /full/path/to/weather-pipeline-project/keys/pipeline-sa.json
-      location: US # or your specific GCP dataset region (e.g., me-central2)
+      location: US
 ```
 
-2. Install dbt packages and execute the models and tests:
+> **Note:** The `dataset` field above is only the default/landing schema. The project writes to `weather_bronze`, `weather_silver`, and `weather_gold` via a custom `generate_schema_name` macro (`macros/generate_schema_name.sql`) — this avoids BigQuery's default schema-name concatenation behavior (e.g., `weather_silver_gold`).
 
+2. Install dbt packages and execute the models and tests:
 ```bash
 cd weather_transform
 dbt deps
@@ -213,13 +253,11 @@ dbt build --full-refresh
 
 # Standard incremental daily build & test execution
 dbt build
+cd ..
 ```
 
----
-
-### 4. Configure & Start Apache Airflow
+### 7. Configure & Start Apache Airflow
 1. Export your environment variables and start Airflow from the root project directory:
-
 ```bash
 export AIRFLOW_HOME=$(pwd)/airflow
 export GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/keys/pipeline-sa.json
@@ -229,22 +267,16 @@ airflow standalone
 ```
 
 2. **Configure the `google_cloud_default` Connection in Airflow:**
-   * **Option A (Via CLI - Recommended):**
+   * **Via CLI (Recommended):**
      ```bash
      airflow connections add 'google_cloud_default' \
          --conn-type 'google_cloud_platform' \
          --conn-extra '{"project": "YOUR_GCP_PROJECT_ID", "key_path": "'$(pwd)'/keys/pipeline-sa.json"}'
      ```
-   * **Option B (Via Airflow Web UI):**
-     1. Open the Airflow UI (`http://localhost:8080`).
-     2. Navigate to **Admin** ➔ **Connections**.
-     3. Edit (or create) **`google_cloud_default`**:
-        * **Connection Type:** `Google Cloud`
-        * **Project ID:** `<YOUR_GCP_PROJECT_ID>`
-        * **Keyfile Path:** `/full/path/to/weather-pipeline-project/keys/pipeline-sa.json`
 
-## 👨‍💻 About Me
-
-Hi, I'm **Nadim Alhoshani**, a senior Computer Science student at **King Saud University** with a profound passion for **Data Engineering** and building robust, scalable data architectures. 
-
-I enjoy tackling complex data challenges, designing efficient ETL/ELT pipelines, and transforming raw, fragmented data into actionable business insights. I'm constantly exploring new technologies, cloud platforms, and distributed data processing frameworks to stay at the forefront of the data ecosystem.
+### 8. Run the Historical Backfill
+Before relying on the daily DAG, populate historical data (2021-01-01 → present) once:
+```bash
+uv run python airflow/dags/backfill_bronze.py
+```
+This fetches one API call per city per year (to respect Open-Meteo's non-commercial rate limits) and bulk-loads the results into Bronze via a staging table + single `MERGE`, rather than per-row inserts.
