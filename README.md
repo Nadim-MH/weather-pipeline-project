@@ -242,3 +242,9 @@ airflow standalone
         * **Connection Type:** `Google Cloud`
         * **Project ID:** `<YOUR_GCP_PROJECT_ID>`
         * **Keyfile Path:** `/full/path/to/weather-pipeline-project/keys/pipeline-sa.json`
+
+## 👨‍💻 About Me
+
+Hi, I'm **Nadim Alhoshani**, a senior Computer Science student at **King Saud University** with a profound passion for **Data Engineering** and building robust, scalable data architectures. 
+
+I enjoy tackling complex data challenges, designing efficient ETL/ELT pipelines, and transforming raw, fragmented data into actionable business insights. I'm constantly exploring new technologies, cloud platforms, and distributed data processing frameworks to stay at the forefront of the data ecosystem.
