@@ -7,7 +7,6 @@
 WITH validated_data AS (
     SELECT 
         *,
-        -- تقييم القواعد الفيزيائية وتحديد سبب العزل
         CASE 
             WHEN relative_humidity_2m_percent < 0 OR relative_humidity_2m_percent > 100 THEN 'Invalid Humidity Range'
             WHEN precipitation_mm < 0 THEN 'Negative Precipitation'
@@ -23,7 +22,6 @@ WITH validated_data AS (
     {% endif %}
 )
 
--- فلترة السجلات المرفوضة فقط وإضافة طابع زمني لوقت العزل
 SELECT 
     city_id,
     request_date,
