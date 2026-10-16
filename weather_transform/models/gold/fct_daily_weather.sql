@@ -16,7 +16,6 @@ WITH hourly_local AS (
     FROM {{ ref('fct_weather_hourly') }}
     
     {% if is_incremental() %}
-    -- استخدام توقيت الرياض لضمان دقة نافذة التحديث
     WHERE DATE(observed_at_utc, 'Asia/Riyadh') >= DATE_SUB(CURRENT_DATE('Asia/Riyadh'), INTERVAL 14 DAY)
     {% endif %}
 ),
@@ -37,7 +36,6 @@ daily_agg AS (
 ),
 
 dominant_code AS (
-    -- أشد كود طقس بنفس اليوم (أعلى رقم = أشد شدة تقريباً حسب ترتيب WMO)
     SELECT
         city_id,
         date_day,
