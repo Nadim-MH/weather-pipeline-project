@@ -17,6 +17,5 @@ SELECT
 FROM {{ ref('int_weather_hourly_clean') }} c
 
 {% if is_incremental() %}
--- نافذة معالجة ديناميكية تعتمد على تاريخ اليوم بدلاً من قراءة الجدول الهدف
 WHERE DATE(c.observed_at_utc) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY)
 {% endif %}
