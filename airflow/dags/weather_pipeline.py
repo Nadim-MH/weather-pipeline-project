@@ -8,8 +8,8 @@ from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
 from airflow.operators.bash import BashOperator
 from saudi_cities import SAUDI_CITIES
 
-BUCKET_NAME = "de-weather-project-510114-bucket-bronze"
-PROJECT_ID = "de-weather-project-510114"
+BUCKET_NAME = "your-gcs-bucket-name"
+PROJECT_ID = "your-gcp-project-id"
 ARCHIVE_LAG_DAYS = 6
 
 default_args = {
@@ -121,12 +121,12 @@ def weather_pipeline():
         bash_command="cd /workspaces/weather-pipeline-project/weather_transform && dbt build",
     )
 
-    # ربط المهام بالتسلسل
+    # Map tasks and define dependencies
     fetched_data = fetch_weather.expand(city=SAUDI_CITIES)
     uploaded_data = upload_to_gcs.expand(payload=fetched_data)
     bronze_tasks = load_to_bq_bronze.expand(payload=uploaded_data)
 
-    # تشغيل dbt build (يبني ويختبر Silver وGold معًا) بعد اكتمال كل مهام البرونز الـ 14
+    # Execute dbt build after all 14 Bronze tasks complete
     bronze_tasks >> run_dbt_transformations
 
 weather_pipeline()
