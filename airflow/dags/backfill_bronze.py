@@ -8,24 +8,24 @@ import requests
 from google.cloud import bigquery, storage
 from saudi_cities import SAUDI_CITIES
 
-PROJECT_ID = "de-weather-project-510114"
-BUCKET_NAME = "de-weather-project-510114-bucket-bronze"
-CREDENTIALS_FILE = "/workspaces/weather-pipeline-project/keys/pipeline-sa.json" # Adjust path if needed
+PROJECT_ID = "your-gcp-project-id"
+BUCKET_NAME = "your-gcs-bucket-name"
+CREDENTIALS_FILE = "/path/to/your/service-account-key.json" 
 BACKFILL_START_DATE = "2021-01-01"
 HOURLY_VARS = "temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m"
 GCS_UPLOAD_WORKERS = 20
 API_FETCH_WORKERS = 4
 
 def get_backfill_end_date(bq_client: bigquery.Client) -> str:
-    """Gets the day before the oldest date currently in Bronze to prevent DAG overlaps."""
+    """Get the day before the oldest date in Bronze to prevent overlaps."""
     query = f"SELECT MIN(request_date) AS min_date FROM `{PROJECT_ID}.weather_bronze.raw_weather_responses`"
     result = list(bq_client.query(query).result())[0]
     if result.min_date is None:
-        raise RuntimeError("Bronze table is empty - run the daily DAG at least once before backfill.")
+        raise RuntimeError("Bronze table is empty. Run the daily DAG at least once before backfill.")
     return (result.min_date - timedelta(days=1)).strftime("%Y-%m-%d")
 
 def fetch_city_range(city: dict, start_date: str, end_date: str) -> dict:
-    """Fetches the full date range for a single city in one API call."""
+    """Fetch the full date range for a single city in one API call."""
     params = {
         "latitude": city["latitude"],
         "longitude": city["longitude"],
@@ -53,7 +53,7 @@ def fetch_city_range(city: dict, start_date: str, end_date: str) -> dict:
     raise RuntimeError(f"Failed to fetch data for {city['city_name']} after 3 attempts.")
 
 def split_into_daily_payloads(full_response: dict) -> list[dict]:
-    """Splits a multi-year API response into separate daily payloads."""
+    """Split a multi-year API response into separate daily payloads."""
     hourly = full_response["hourly"]
     times = hourly["time"]
     indices_by_date = defaultdict(list)
